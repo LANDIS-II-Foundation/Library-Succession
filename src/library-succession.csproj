@@ -50,7 +50,7 @@
 
   <ItemGroup>
     <Reference Include="Landis.Library.UniversalCohorts-v2">
-      <HintPath>lib\Landis.Library.UniversalCohorts-v1.dll</HintPath>
+      <HintPath>lib\Landis.Library.UniversalCohorts-v2.dll</HintPath>
     </Reference>
     <Reference Include="Seed_Dispersal">
       <HintPath>lib\Seed_Dispersal.dll</HintPath>
