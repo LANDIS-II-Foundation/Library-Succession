@@ -23,6 +23,7 @@ namespace Landis.Library.Succession
         {
             established = false;
             seedlingProportion = 1;
+
             if (species.EffectiveSeedDist == Universal)
             {
                 UniversalDispersal.Algorithm(species, site, out established, out seedlingProportion);
@@ -53,73 +54,106 @@ namespace Landis.Library.Succession
 
             else
             {
-                if (isDebugEnabled)
-                    log.DebugFormat("site {0}: search neighbors for {1}",
-                                    site.Location, species.Name);
 
-                foreach (RelativeLocationWeighted reloc in Seeding.MaxSeedQuarterNeighborhood)
+                // Lock around the on-site MaturePresent check
+                bool matureOnSite;
+                lock (Reproduction.GetSiteLock(site))
                 {
-                    double distance = reloc.Weight;
-                    int rRow = (int)reloc.Location.Row;
-                    int rCol = (int)reloc.Location.Column;
+                    matureOnSite = Reproduction.MaturePresent(species, site);
+                }
 
-                    double EffD = (double)species.EffectiveSeedDist;
-                    double MaxD = (double)species.MaxSeedDist;
+                if (matureOnSite)
+                {
+                    if (isDebugEnabled)
+                        log.DebugFormat("site {0}: {1} seeded on site",
+                                        site.Location, species.Name);
+                    established = true;
+                }
 
-                    if (distance > MaxD + ((double)Model.Core.CellLength / 2.0 * 1.414))
-                        established = false;  //Check no further
+                else
+                // --- neighbor search (unchanged, except each MaturePresent
+                //     on a neighbor is wrapped in its own lock, as before) ---
+                {
+                    if (isDebugEnabled)
+                        log.DebugFormat("site {0}: search neighbors for {1}",
+                                        site.Location, species.Name);
 
-                    double dispersalProb = GetDispersalProbability(EffD, MaxD, distance);
-                    var uniformProb = randomGen == null ? Model.Core.NextDouble() : randomGen.NextDouble();
-
-                    //First check the Southeast quadrant:
-                    if (dispersalProb > uniformProb)
+                    foreach (RelativeLocationWeighted reloc in Seeding.MaxSeedQuarterNeighborhood)
                     {
-                        Site neighbor = site.GetNeighbor(reloc.Location);
-                        if (neighbor != null && neighbor.IsActive)
-                            if (Reproduction.MaturePresent(species, (ActiveSite)neighbor))
-                            {
-                                established = true;
-                                break;
-                            }
-                    }
+                        double distance = reloc.Weight;
+                        int rRow = (int)reloc.Location.Row;
+                        int rCol = (int)reloc.Location.Column;
 
-                    //Next, check all other quadrants:        
-                    if (dispersalProb > uniformProb)
-                    {
-                        Site neighbor = site.GetNeighbor(new RelativeLocation(rRow * -1, rCol));
-                        if (rCol == 0)
-                            neighbor = site.GetNeighbor(new RelativeLocation(0, rRow));
-                        if (neighbor != null && neighbor.IsActive)
-                            if (Reproduction.MaturePresent(species, (ActiveSite)neighbor))
-                            {
-                                established = true;
-                                break;
-                            }
-                    }
+                        double EffD = (double)species.EffectiveSeedDist;
+                        double MaxD = (double)species.MaxSeedDist;
 
-                    if (dispersalProb > uniformProb)
-                    {
-                        Site neighbor = site.GetNeighbor(new RelativeLocation(rRow * -1, rCol * -1));
-                        if (neighbor != null && neighbor.IsActive)
-                            if (Reproduction.MaturePresent(species, (ActiveSite)neighbor))
-                            {
-                                established = true;
-                                break;
-                            }
-                    }
+                        if (distance > MaxD + ((double)Model.Core.CellLength / 2.0 * 1.414))
+                            established = false;  //Check no further
 
-                    if (dispersalProb > uniformProb)
-                    {
-                        Site neighbor = site.GetNeighbor(new RelativeLocation(rRow, rCol * -1));
-                        if (rCol == 0)
-                            neighbor = site.GetNeighbor(new RelativeLocation(0, rRow * -1));
-                        if (neighbor != null && neighbor.IsActive)
-                            if (Reproduction.MaturePresent(species, (ActiveSite)neighbor))
-                            {
-                                established = true;
-                                break;
-                            }
+                        double dispersalProb = GetDispersalProbability(EffD, MaxD, distance);
+                        var uniformProb = randomGen == null ? Model.Core.NextDouble() : randomGen.NextDouble();
+
+                        //First check the Southeast quadrant:
+                        if (dispersalProb > uniformProb)
+                        {
+                            Site neighbor = site.GetNeighbor(reloc.Location);
+                            if (neighbor != null && neighbor.IsActive)
+                                lock (Reproduction.GetSiteLock((ActiveSite)neighbor))
+                                {
+                                    if (Reproduction.MaturePresent(species, (ActiveSite)neighbor))
+                                    {
+                                        established = true;
+                                        break;
+                                    }
+                                }
+                        }
+
+                        //Next, check all other quadrants:        
+                        if (dispersalProb > uniformProb)
+                        {
+                            Site neighbor = site.GetNeighbor(new RelativeLocation(rRow * -1, rCol));
+                            if (rCol == 0)
+                                neighbor = site.GetNeighbor(new RelativeLocation(0, rRow));
+                            if (neighbor != null && neighbor.IsActive)
+                                lock (Reproduction.GetSiteLock((ActiveSite)neighbor))
+                                {
+                                    if (Reproduction.MaturePresent(species, (ActiveSite)neighbor))
+                                    {
+                                        established = true;
+                                        break;
+                                    }
+                                }
+                        }
+
+                        if (dispersalProb > uniformProb)
+                        {
+                            Site neighbor = site.GetNeighbor(new RelativeLocation(rRow * -1, rCol * -1));
+                            if (neighbor != null && neighbor.IsActive)
+                                lock (Reproduction.GetSiteLock((ActiveSite)neighbor))
+                                {
+                                    if (Reproduction.MaturePresent(species, (ActiveSite)neighbor))
+                                    {
+                                        established = true;
+                                        break;
+                                    }
+                                }
+                        }
+
+                        if (dispersalProb > uniformProb)
+                        {
+                            Site neighbor = site.GetNeighbor(new RelativeLocation(rRow, rCol * -1));
+                            if (rCol == 0)
+                                neighbor = site.GetNeighbor(new RelativeLocation(0, rRow * -1));
+                            if (neighbor != null && neighbor.IsActive)
+                                lock (Reproduction.GetSiteLock((ActiveSite)neighbor))
+                                {
+                                    if (Reproduction.MaturePresent(species, (ActiveSite)neighbor))
+                                    {
+                                        established = true;
+                                        break;
+                                    }
+                                }
+                        }
                     }
 
                 }  // end foreach relativelocation

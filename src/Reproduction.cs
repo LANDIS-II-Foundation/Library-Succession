@@ -84,6 +84,7 @@ namespace Landis.Library.Succession
         //private static ISiteVar<BitArray> planting;
         private static ISiteVar<bool> noEstablish;
         private static IPlanting planting;
+        private static object[] siteLocks;
 
         private static Delegates.AddNewCohort addNewCohort;
         private static Delegates.SufficientResources lightMethod = ReproductionDefaults.SufficientResources;
@@ -275,6 +276,17 @@ namespace Landis.Library.Succession
             noEstablish.ActiveSiteValues = false;
             planting = new Planting();
 
+            // Initialize per-site locks for thread-safe cohort access
+            uint maxDataIndex = 0;
+            foreach (ActiveSite s in Model.Core.Landscape.ActiveSites)
+            {
+                if (s.DataIndex > maxDataIndex)
+                    maxDataIndex = s.DataIndex;
+            }
+            siteLocks = new object[maxDataIndex + 1];
+            for (int i = 0; i < siteLocks.Length; i++)
+                siteLocks[i] = new object();
+
         }
 
         //---------------------------------------------------------------------
@@ -371,49 +383,58 @@ namespace Landis.Library.Succession
         //---------------------------------------------------------------------
 
         /// <summary>
+        /// Gets the lock object for a given site, used to synchronize
+        /// concurrent reads/writes to that site's cohort collection.
+        /// </summary>
+        internal static object GetSiteLock(ActiveSite site)
+        {
+            return siteLocks[site.DataIndex];
+        }
+
+        /// <summary>
         /// Does the appropriate forms of reproduction at a site.
         /// </summary>
         public static void Reproduce(ActiveSite site, ThreadSafeRandom randomGen = null)
         {
-            if(noEstablish[site])
+            if (noEstablish[site])
                 return;
 
-            bool plantingOccurred = planting.TryAt(site);
-            //bool plantingOccurred = false;
-            //for (int index = 0; index < speciesDataset.Count; ++index)
-            //{
-            //    if (planting[site].Get(index))
-            //    {
-            //        ISpecies species = speciesDataset[index];
-            //        if (PlantingEstablish(species, site))
-            //        {
-            //            AddNewCohort(species, site);
-            //            plantingOccurred = true;
-            //        }
-            //    }
-            //}
+            object siteLock = GetSiteLock(site);
+
+            bool plantingOccurred;
+            lock (siteLock)
+            {
+                plantingOccurred = planting.TryAt(site);
+            }
 
             bool sufficientLight;
 
             bool serotinyOccurred = false;
-            if (! plantingOccurred) {
-                for (int index = 0; index < speciesDataset.Count; ++index) {
-                    if (serotiny[site].Get(index)) {
+            if (!plantingOccurred)
+            {
+                for (int index = 0; index < speciesDataset.Count; ++index)
+                {
+                    if (serotiny[site].Get(index))
+                    {
                         ISpecies species = speciesDataset[index];
                         sufficientLight = SufficientResources(species, site);
-                        if (sufficientLight && Establish(species, site)) {
-                            // Temp set propBiomass to 1.0
-                            AddNewCohort(species, site,"serotiny", 1.0);
+                        if (sufficientLight && Establish(species, site))
+                        {
+                            lock (siteLock)
+                            {
+                                AddNewCohort(species, site, "serotiny", 1.0);
+                            }
                             serotinyOccurred = true;
                             if (isDebugEnabled)
                                 log.DebugFormat("site {0}: {1} post-fire regenerated",
                                                 site.Location, species.Name);
                         }
-                        else {
+                        else
+                        {
                             if (isDebugEnabled)
                                 log.DebugFormat("site {0}: {1} post-fire regen failed: {2}",
                                                 site.Location, species.Name,
-                                                ! sufficientLight ? "insufficient light"
+                                                !sufficientLight ? "insufficient light"
                                                                   : "didn't establish");
                         }
                     }
@@ -422,25 +443,32 @@ namespace Landis.Library.Succession
             serotiny[site].SetAll(false);
 
             bool speciesResprouted = false;
-            if (! serotinyOccurred) {
-                for (int index = 0; index < speciesDataset.Count; ++index) {
-                    if (resprout[site].Get(index)) {
+            if (!serotinyOccurred)
+            {
+                for (int index = 0; index < speciesDataset.Count; ++index)
+                {
+                    if (resprout[site].Get(index))
+                    {
                         ISpecies species = speciesDataset[index];
                         sufficientLight = SufficientResources(species, site);
                         if (sufficientLight &&
-                                ((randomGen == null ? Model.Core.NextDouble() : randomGen.NextDouble()) < species.VegReprodProb)) {
-                            // Temp set propBiomass to 1.0
-                            AddNewCohort(species, site, "resprout",1.0);
+                                ((randomGen == null ? Model.Core.NextDouble() : randomGen.NextDouble()) < species.VegReprodProb))
+                        {
+                            lock (siteLock)
+                            {
+                                AddNewCohort(species, site, "resprout", 1.0);
+                            }
                             speciesResprouted = true;
                             if (isDebugEnabled)
                                 log.DebugFormat("site {0}: {1} resprouted",
                                                 site.Location, species.Name);
                         }
-                        else {
+                        else
+                        {
                             if (isDebugEnabled)
                                 log.DebugFormat("site {0}: {1} resprouting failed: {2}",
                                                 site.Location, species.Name,
-                                                ! sufficientLight ? "insufficient light"
+                                                !sufficientLight ? "insufficient light"
                                                                   : "random # >= probability");
                         }
                     }
@@ -449,10 +477,8 @@ namespace Landis.Library.Succession
             resprout[site].SetAll(false);
 
             planting.NotTriedAt(site);
-            if (! plantingOccurred && ! serotinyOccurred && ! speciesResprouted)
+            if (!plantingOccurred && !serotinyOccurred && !speciesResprouted)
                 seeding.Do(site, randomGen);
-
-            
         }
 
 
