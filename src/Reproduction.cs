@@ -84,7 +84,24 @@ namespace Landis.Library.Succession
         //private static ISiteVar<BitArray> planting;
         private static ISiteVar<bool> noEstablish;
         private static IPlanting planting;
-        private static object[] siteLocks;
+
+        // We must synchronize access to each site's cohort list: while one
+        // worker thread adds/removes cohorts at a site, another thread may be
+        // reading (iterating) that same site's cohort list during seed
+        // dispersal, which would otherwise crash with a "collection was
+        // modified during enumeration" error.
+        //
+        // Instead of one lock object per active site (about 128 MB of lock
+        // objects on a 4-million-cell landscape, spent even when running with a
+        // single thread), we use a small fixed set of "striped" locks. Each
+        // site maps to a stripe via "data index % SiteLockCount" (see
+        // GetSiteLock below), so memory stays O(1).
+        //
+        // SiteLockCount only needs to be comfortably larger than the number of
+        // worker threads (ThreadCount). Collisions are then rare and harmless.
+        private const int SiteLockCount = 1024;
+
+        private static readonly object[] siteLocks = CreateSiteLocks();
 
         private static Delegates.AddNewCohort addNewCohort;
         private static Delegates.SufficientResources lightMethod = ReproductionDefaults.SufficientResources;
@@ -276,17 +293,6 @@ namespace Landis.Library.Succession
             noEstablish.ActiveSiteValues = false;
             planting = new Planting();
 
-            // Initialize per-site locks for thread-safe cohort access
-            uint maxDataIndex = 0;
-            foreach (ActiveSite s in Model.Core.Landscape.ActiveSites)
-            {
-                if (s.DataIndex > maxDataIndex)
-                    maxDataIndex = s.DataIndex;
-            }
-            siteLocks = new object[maxDataIndex + 1];
-            for (int i = 0; i < siteLocks.Length; i++)
-                siteLocks[i] = new object();
-
         }
 
         //---------------------------------------------------------------------
@@ -383,12 +389,34 @@ namespace Landis.Library.Succession
         //---------------------------------------------------------------------
 
         /// <summary>
-        /// Gets the lock object for a given site, used to synchronize
-        /// concurrent reads/writes to that site's cohort collection.
+        /// Returns the lock object that guards a site's cohort collection.
+        ///
+        /// IMPORTANT — DO NOT NEST THESE LOCKS.
+        /// These locks are "striped": many different sites share the same lock
+        /// object. That is fine as long as each lock is taken on its own and
+        /// released before the next one is taken (which is how all the current
+        /// code behaves).
+        ///
+        /// Never put a GetSiteLock(...) lock INSIDE another GetSiteLock(...)
+        /// lock. If a future change ever modifies two sites' cohorts at once,
+        /// take the two locks one after the other, not one inside the other.
+        /// Nesting them can deadlock: the simulation then freezes silently with
+        /// no error message, which is very hard to diagnose.
         /// </summary>
         internal static object GetSiteLock(ActiveSite site)
         {
-            return siteLocks[site.DataIndex];
+            return siteLocks[(int)(site.DataIndex % SiteLockCount)];
+        }
+
+        /// <summary>
+        /// Creates the fixed, striped set of lock objects.
+        /// </summary>
+        private static object[] CreateSiteLocks()
+        {
+            var locks = new object[SiteLockCount];
+            for (int i = 0; i < locks.Length; i++)
+                locks[i] = new object();
+            return locks;
         }
 
         /// <summary>
